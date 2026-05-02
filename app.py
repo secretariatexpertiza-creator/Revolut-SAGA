@@ -7,42 +7,52 @@ import os
 
 app = Flask(__name__)
 
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Revolut → SAGA</title>
-</head>
-<body style="font-family: Arial; text-align:center; margin-top:50px;">
-<h2>Revolut → SAGA (FINAL)</h2>
+HTML_UPLOAD = """
+<h2>Revolut → SAGA</h2>
 <form method="post" enctype="multipart/form-data">
-    <input type="file" name="file" required><br><br>
-    <button type="submit">Genereaza SAGA</button>
+<input type="file" name="file" required><br><br>
+<button type="submit">Preview</button>
 </form>
-</body>
-</html>
 """
+
+HTML_TABLE = """
+<h2>Preview tranzactii</h2>
+<form method="post" action="/export">
+<table border="1" cellpadding="5">
+<tr>
+<th>Data</th><th>Tip</th><th>Suma EUR</th><th>Suma RON</th><th>Explicatie</th>
+</tr>
+{% for t in tx %}
+<tr>
+<td>{{t[0]}}</td>
+<td>{{t[1]}}</td>
+<td>{{t[2]}}</td>
+<td>{{t[3]}}</td>
+<td>{{t[4]}}</td>
+</tr>
+{% endfor %}
+</table>
+<br>
+<button type="submit">Genereaza SAGA</button>
+</form>
+"""
+
+cache = []
 
 def get_bnr(date):
     try:
         url = f"https://api.exchangerate.host/{date}?base=EUR&symbols=RON"
-        r = requests.get(url, timeout=10).json()
-        return float(r["rates"]["RON"])
+        return float(requests.get(url).json()["rates"]["RON"])
     except:
         return 5.08
 
 def map_account(text):
     t = text.lower()
-    if "coolunity" in t:
-        return "704"
-    if "omv" in t:
-        return "6022"
-    if "leasing" in t:
-        return "167"
-    if "taxa" in t or "asigur" in t:
-        return "635"
-    if "delegare" in t:
-        return "625"
+    if "coolunity" in t: return "704"
+    if "omv" in t: return "6022"
+    if "leasing" in t: return "167"
+    if "taxa" in t: return "635"
+    if "delegare" in t: return "625"
     return "401"
 
 def parse_pdf(file):
@@ -86,49 +96,51 @@ def parse_pdf(file):
 
 @app.route("/", methods=["GET","POST"])
 def home():
+    global cache
     if request.method == "POST":
         f = request.files.get("file")
-        tx = parse_pdf(f)
+        cache = parse_pdf(f)
+        return render_template_string(HTML_TABLE, tx=cache)
 
-        out = "saga.txt"
+    return render_template_string(HTML_UPLOAD)
 
-        with open(out, "w") as g:
-            nr = 1
+@app.route("/export", methods=["POST"])
+def export():
+    global cache
+    out = "saga.txt"
 
-            for d,t,eur,ron,exp in tx:
+    with open(out, "w") as g:
+        nr = 1
 
-                # INCASARE
-                if t == "inc":
-                    g.write(f"{d};OP;{nr};{exp};5124.3;704;{eur};EUR\n")
-                    nr += 1
+        for d,t,eur,ron,exp in cache:
 
-                # PLATA
-                elif t == "pl":
-                    cont = map_account(exp)
-                    g.write(f"{d};OP;{nr};{exp};{cont};5124.3;{eur};EUR\n")
-                    nr += 1
+            if t == "inc":
+                g.write(f"{d};OP;{nr};{exp};5124.3;704;{eur};EUR\n")
+                nr += 1
 
-                # SCHIMB VALUTAR
-                elif t == "fx":
-                    kurs = get_bnr(d)
-                    diff = round(eur * kurs - ron, 2)
+            elif t == "pl":
+                cont = map_account(exp)
+                g.write(f"{d};OP;{nr};{exp};{cont};5124.3;{eur};EUR\n")
+                nr += 1
 
-                    g.write(f"{d};NC;{nr};Schimb;581.2;5124.3;{eur};EUR\n")
-                    nr += 1
+            elif t == "fx":
+                kurs = get_bnr(d)
+                diff = round(eur * kurs - ron, 2)
 
-                    g.write(f"{d};NC;{nr};Schimb;5121.3;581.2;{ron};RON\n")
-                    nr += 1
+                g.write(f"{d};NC;{nr};Schimb;581.2;5124.3;{eur};EUR\n")
+                nr += 1
 
-                    if diff > 0:
-                        g.write(f"{d};NC;{nr};Pierdere curs;665;581.2;{diff};RON\n")
-                    elif diff < 0:
-                        g.write(f"{d};NC;{nr};Castig curs;581.2;765;{abs(diff)};RON\n")
+                g.write(f"{d};NC;{nr};Schimb;5121.3;581.2;{ron};RON\n")
+                nr += 1
 
-                    nr += 1
+                if diff > 0:
+                    g.write(f"{d};NC;{nr};Pierdere curs;665;581.2;{diff};RON\n")
+                elif diff < 0:
+                    g.write(f"{d};NC;{nr};Castig curs;581.2;765;{abs(diff)};RON\n")
 
-        return send_file(out, as_attachment=True)
+                nr += 1
 
-    return render_template_string(HTML)
+    return send_file(out, as_attachment=True)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
